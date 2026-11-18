@@ -4,7 +4,7 @@ from util import torch_dct
 
 def DCTBlur(x, t):
     eps = 1e-4
-    a = 0.5
+    a = 1.0
 
     orig_dtype = x.dtype
     device = x.device
@@ -25,7 +25,9 @@ def DCTBlur(x, t):
 
     i = torch.arange(H, device=device, dtype=dtype).view(H, 1)
     j = torch.arange(W, device=device, dtype=dtype).view(1, W)
-    lamb = - (math.pi ** 2) * (i**2 / (H**2) + j**2 / (W**2))
+    # Unit-grid finite-difference Neumann spectrum (paper Algorithm 1).
+    lamb = - ((2 - 2 * torch.cos(math.pi * i / H))
+              + (2 - 2 * torch.cos(math.pi * j / W)))
 
     lamb_view = lamb.view(1, 1, H, W)
     t_view = t.view(B, 1, 1, 1)

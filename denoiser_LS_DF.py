@@ -84,11 +84,15 @@ class Denoiser(nn.Module):
         else:
             raise NotImplementedError
 
+        beta = 0.5  # Fallback when a single step has no preceding estimate.
         for i in range(self.steps - 1):
             t = timesteps[i]
             t_next = timesteps[i + 1]
-            z = stepper(z, t, t_next, labels)
-        z = self._euler_step(z, timesteps[-2], timesteps[-1], labels)
+            z, beta = stepper(z, t, t_next, labels, return_beta=True)
+        # Final Euler step reuses beta, without evaluating the field at t = 1.
+        t = timesteps[-2]
+        base, delta = self._forward_sample(z, t, labels)
+        z = z + (timesteps[-1] - t) * (base - beta * delta)
         return z
 
 
@@ -105,7 +109,7 @@ class Denoiser(nn.Module):
         v_base_uncond = (x_uncond_t_blur - z) / s
 
         low, high = self.cfg_interval
-        interval_mask = (t < high) & ((low == 0) | (t > low))
+        interval_mask = (t >= low) & (t <= high)
         cfg_scale_interval = torch.where(interval_mask, self.cfg_scale, 1.0)
 
         base = v_base_uncond + cfg_scale_interval * (v_base_cond - v_base_uncond)
@@ -114,7 +118,7 @@ class Denoiser(nn.Module):
         return base, delta
 
     @torch.no_grad()
-    def _euler_step(self, z, t, t_next, labels):
+    def _euler_step(self, z, t, t_next, labels, return_beta=False):
         dt = (t_next - t)
         base_t, delta_t = self._forward_sample(z, t, labels)
         v_pred0 = base_t - 0.5 * delta_t
@@ -131,11 +135,12 @@ class Denoiser(nn.Module):
         sig_no   = r_no.pow(2).mean(dim=(1,2,3), keepdim=True) + eps
         beta = (sig_no / (sig_full + sig_no)).clamp(0.05, 0.95)
         v = base_t - beta * delta_t
-        return z + dt * v
+        z_next = z + dt * v
+        return (z_next, beta) if return_beta else z_next
 
 
     @torch.no_grad()
-    def _heun_step(self, z, t, t_next, labels):
+    def _heun_step(self, z, t, t_next, labels, return_beta=False):
         dt = (t_next - t)
 
         base_t, delta_t = self._forward_sample(z, t, labels)
@@ -164,7 +169,8 @@ class Denoiser(nn.Module):
         delta_heun = 0.5 * (delta_t + delta_n)
 
         v = base_heun - beta * delta_heun
-        return z + dt * v
+        z_next = z + dt * v
+        return (z_next, beta) if return_beta else z_next
 
     @torch.no_grad()
     def update_ema(self):
